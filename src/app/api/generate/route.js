@@ -1,11 +1,7 @@
 import { fal } from "@fal-ai/client";
 import { NextResponse } from "next/server";
-
-// Template motion control videos
-const TEMPLATE_VIDEOS = {
-  1: "https://vista-ia.s3.eu-north-1.amazonaws.com/bjr_princesseeee.mp4", // Bonjour Princesse
-  2: "https://vista-ia.s3.eu-north-1.amazonaws.com/vista_20260113_Motion_Control__314_0.mp4", // Dance (using same for now)
-};
+import { connectToDatabase } from "@/lib/db";
+import { ObjectId } from "mongodb";
 
 // Convert base64 data URI to Blob
 function dataUriToBlob(dataUri) {
@@ -23,11 +19,13 @@ function dataUriToBlob(dataUri) {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { action, requestId, imageData, templateId, imageUrl } = body;
+    const { action, requestId, imageData, templateId, imageUrl, modelName: providedModelName } = body;
 
     // Action: Check status
     if (action === "status") {
-      const status = await fal.queue.status("fal-ai/kling-video/v2.6/standard/motion-control", {
+      // Use provided model name or default to motion-control
+      const modelEndpoint = providedModelName || "fal-ai/kling-video/v2.6/standard/motion-control";
+      const status = await fal.queue.status(modelEndpoint, {
         requestId,
         logs: true,
       });
@@ -41,7 +39,9 @@ export async function POST(request) {
 
     // Action: Get result
     if (action === "result") {
-      const result = await fal.queue.result("fal-ai/kling-video/v2.6/standard/motion-control", {
+      // Use provided model name or default to motion-control
+      const modelEndpoint = providedModelName || "fal-ai/kling-video/v2.6/standard/motion-control";
+      const result = await fal.queue.result(modelEndpoint, {
         requestId,
       });
 
@@ -78,27 +78,74 @@ export async function POST(request) {
       );
     }
 
-    const videoUrl = TEMPLATE_VIDEOS[templateId];
-    if (!videoUrl) {
+    // Fetch template from MongoDB
+    const { db } = await connectToDatabase();
+    const template = await db.collection("memeTemplates").findOne({
+      _id: new ObjectId(templateId),
+    });
+
+    if (!template) {
       return NextResponse.json(
-        { error: "Invalid template ID" },
+        { error: "Template not found" },
+        { status: 404 }
+      );
+    }
+
+    const modelName = template.aiConfig?.modelName;
+    const modelType = template.aiConfig?.modelType;
+    const requestPrompt = template.aiConfig?.requestPrompt;
+
+    if (!modelName) {
+      return NextResponse.json(
+        { error: "Template missing model configuration" },
         { status: 400 }
       );
     }
 
-    // Submit the generation request
-    const { request_id } = await fal.queue.submit("fal-ai/kling-video/v2.6/standard/motion-control", {
-      input: {
+    let submitInput;
+
+    // Handle different model types
+    if (modelType === "image-to-video") {
+      // Image-to-video model: uses prompt and start_image_url
+      const prompt = requestPrompt?.prompt;
+      if (!prompt) {
+        return NextResponse.json(
+          { error: "Template missing prompt configuration" },
+          { status: 400 }
+        );
+      }
+
+      submitInput = {
+        prompt: prompt,
+        start_image_url: imageUrl,
+      };
+    } else {
+      // Motion-control model (default): uses video_url and image_url
+      const motionVideoUrl = requestPrompt?.motionVideoUrl;
+      if (!motionVideoUrl) {
+        return NextResponse.json(
+          { error: "Template missing motion video configuration" },
+          { status: 400 }
+        );
+      }
+
+      submitInput = {
         image_url: imageUrl,
-        video_url: videoUrl,
+        video_url: motionVideoUrl,
         character_orientation: "video",
         keep_original_sound: true,
-      },
+      };
+    }
+
+    // Submit the generation request
+    const { request_id } = await fal.queue.submit(modelName, {
+      input: submitInput,
     });
 
     return NextResponse.json({
       success: true,
       requestId: request_id,
+      modelName: modelName,
       message: "Génération démarrée",
     });
 

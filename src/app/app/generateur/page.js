@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Upload, 
@@ -18,19 +18,6 @@ import {
   X
 } from "lucide-react";
 import { addCreation, updateCreation, CreationStatus } from "@/lib/creations";
-
-const templates = [
-  { 
-    id: 1, 
-    name: "Bonjour Princesse", 
-    previewUrl: "https://vista-ia.s3.eu-north-1.amazonaws.com/vista_20260113_Motion_Control__149_0.mp4"
-  },
-  { 
-    id: 2, 
-    name: "Dance", 
-    previewUrl: "https://vista-ia.s3.eu-north-1.amazonaws.com/vista_20260113_Motion_Control__314_0.mp4"
-  },
-];
 
 // Generation status stages
 const STATUS_MESSAGES = {
@@ -141,6 +128,11 @@ async function processImageFile(file) {
 }
 
 export default function GenerateurPage() {
+  // Templates from API
+  const [templates, setTemplates] = useState([]);
+  const [isLoadingTemplates, setIsLoadingTemplates] = useState(true);
+  const [templatesError, setTemplatesError] = useState(null);
+
   const [selectedTemplate, setSelectedTemplate] = useState(null);
   const [uploadedImage, setUploadedImage] = useState(null);
   const [uploadedFile, setUploadedFile] = useState(null);
@@ -155,6 +147,24 @@ export default function GenerateurPage() {
   const resultVideoRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
 
+  // Fetch templates from API
+  useEffect(() => {
+    async function fetchTemplates() {
+      try {
+        const response = await fetch("/api/templates?category=video&active=true");
+        if (!response.ok) throw new Error("Failed to fetch templates");
+        const data = await response.json();
+        setTemplates(data);
+      } catch (err) {
+        console.error("Error fetching templates:", err);
+        setTemplatesError("Impossible de charger les templates");
+      } finally {
+        setIsLoadingTemplates(false);
+      }
+    }
+    fetchTemplates();
+  }, []);
+
   // Cleanup polling on unmount
   const stopPolling = useCallback(() => {
     if (pollingRef.current) {
@@ -164,12 +174,12 @@ export default function GenerateurPage() {
   }, []);
 
   // Poll for status
-  const pollStatus = useCallback(async (requestId, creationId) => {
+  const pollStatus = useCallback(async (requestId, creationId, modelName) => {
     try {
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "status", requestId }),
+        body: JSON.stringify({ action: "status", requestId, modelName }),
       });
 
       const data = await response.json();
@@ -192,7 +202,7 @@ export default function GenerateurPage() {
         const resultResponse = await fetch("/api/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "result", requestId }),
+          body: JSON.stringify({ action: "result", requestId, modelName }),
         });
         
         const resultData = await resultResponse.json();
@@ -295,16 +305,17 @@ export default function GenerateurPage() {
         throw new Error(submitData.error);
       }
 
-      // Update creation with request ID
+      // Update creation with request ID and modelName
       updateCreation(creation.id, {
         requestId: submitData.requestId,
+        modelName: submitData.modelName,
         status: CreationStatus.IN_QUEUE,
       });
 
       // Start polling for status
       setGenerationStatus("IN_QUEUE");
       pollingRef.current = setInterval(() => {
-        pollStatus(submitData.requestId, creation.id);
+        pollStatus(submitData.requestId, creation.id, submitData.modelName);
       }, 3000);
 
     } catch (err) {
@@ -435,15 +446,32 @@ export default function GenerateurPage() {
               <h3 className="step-title">Choisissez un template</h3>
             </div>
             <div className="template-video-grid">
-              {templates.map((template) => (
-                <TemplateCard
-                  key={template.id}
-                  template={template}
-                  isSelected={selectedTemplate === template.id}
-                  onSelect={() => setSelectedTemplate(template.id)}
-                  disabled={isGenerating}
-                />
-              ))}
+              {isLoadingTemplates ? (
+                // Skeleton loading
+                <>
+                  {[1, 2].map((i) => (
+                    <div key={i} className="template-skeleton">
+                      <div className="skeleton-video" />
+                      <div className="skeleton-text" />
+                    </div>
+                  ))}
+                </>
+              ) : templatesError ? (
+                <div className="templates-error">
+                  <AlertCircle size={24} />
+                  <span>{templatesError}</span>
+                </div>
+              ) : (
+                templates.map((template) => (
+                  <TemplateCard
+                    key={template.id}
+                    template={template}
+                    isSelected={selectedTemplate === template.id}
+                    onSelect={() => setSelectedTemplate(template.id)}
+                    disabled={isGenerating}
+                  />
+                ))
+              )}
             </div>
           </div>
 
